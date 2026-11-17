@@ -119,12 +119,7 @@ system → user → assistant(tool_calls ×2) → tool → tool → assistant(fi
 
 Panel dividido en tres zonas (rejilla CSS de 3 columnas; en pantallas < 1100px se apilan):
 
-### Izquierda · Editor de tools (JSON Schema)
-- Textarea monoespaciada con las definiciones de tools, **editable en caliente**.
-- Validación en cada teclado: debe ser un `Array`, cada entrada `{ type: "function", function: { name, parameters } }`.
-  - ✔ `JSON válido · 3 tool(s): get_order_status, get_weather, get_current_time`
-  - ✖ mensaje de error en rojo (y se bloquea el envío del chat).
-- Botón **Restaurar** → devuelve `DEFAULT_TOOLS_JSON`.
+
 
 ### Centro · Chat
 - Historial con burbujas por rol: `system` (dashed, centrada), `user` (acento, derecha), `assistant` (fondo código, izquierda), `tool` (monoespaciado, retorno JSON).

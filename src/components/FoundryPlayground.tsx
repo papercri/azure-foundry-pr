@@ -133,7 +133,7 @@ function FoundryPlayground() {
         <div>
           <h1>Azure AI Foundry · Tool Calling Playground</h1>
           <p className="pg-sub">
-            Editor de tools JSON Schema, chat y inspector de <code>tool_calls</code> en vivo.
+            Chat y inspector de <code>tool_calls</code> en vivo.
           </p>
         </div>
         <div className="pg-chips">
@@ -150,7 +150,7 @@ function FoundryPlayground() {
       )}
 
       <div className="pg-grid">
-        <section className="panel" aria-label="Editor de tools">
+      {/*   <section className="panel" aria-label="Editor de tools">
           <div className="panel-head">
             <h2>Tools (JSON Schema)</h2>
             <button
@@ -178,7 +178,7 @@ function FoundryPlayground() {
                   }`}
             </p>
           </div>
-        </section>
+        </section> */}
 
         <section className="panel" aria-label="Chat de pruebas">
           <div className="panel-head">
