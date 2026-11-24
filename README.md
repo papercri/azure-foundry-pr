@@ -1,6 +1,8 @@
-# Azure Foundry · Tool Calling Playground
+# Azure Foundry · Agent Playground
 
-Entorno de pruebas (React + Vite) para experimentar con *function calling* / *tools* de Azure AI Foundry.
+Entorno de pruebas (React + Vite) para conversar con un **agente de Microsoft Foundry** a través de su
+endpoint dedicado (protocolo OpenAI `responses`) con **streaming SSE** y traza de actividad, al estilo
+del Agent Playground de Azure AI Foundry.
 
 ## Setup
 
@@ -12,10 +14,10 @@ Entorno de pruebas (React + Vite) para experimentar con *function calling* / *to
 
    | Variable | Descripción |
    | --- | --- |
-   | `VITE_AZURE_FOUNDRY_ENDPOINT` | `https://<recurso>.openai.azure.com/openai/v1` (recomendado), `https://<recurso>.openai.azure.com` o `https://<recurso>.services.ai.azure.com/models` |
-   | `VITE_AZURE_FOUNDRY_API_KEY` | Clave del recurso |
-   | `VITE_AZURE_DEPLOYMENT_NAME` | Nombre del deployment (p. ej. `gpt-5.1`) |
-   | `VITE_AZURE_API_VERSION` | `v1` para el endpoint `/openai/v1`, o fecha para el clásico (p. ej. `2024-10-21`) |
+   | `VITE_AZURE_FOUNDRY_AGENT_ENDPOINT` | URL completa de invocación del agente (Foundry → agente → "Test" → copiar endpoint). **Cambia cada vez que recreas el agente**; termina en `.../endpoint/protocols/openai/responses` |
+   | `VITE_AZURE_FOUNDRY_API_KEY` | Clave del recurso. Si es un token AAD (JWT) se envía como `Authorization: Bearer` automáticamente |
+   | `VITE_AZURE_API_VERSION` | Versión de la API (query `?api-version=`); `v1` por defecto. Opcional si la URL ya la trae |
+   | `VITE_AZURE_DEPLOYMENT_NAME` | Opcional: modelo a enviar en el body si el agente lo exige |
 
    > `.env` está en `.gitignore`: no subas claves al repo.
 
@@ -27,9 +29,10 @@ Entorno de pruebas (React + Vite) para experimentar con *function calling* / *to
 
 ## Estructura
 
-- `src/services/foundryService.ts` — cliente Chat Completions con `fetch` nativo y el ciclo completo de *tool calling* (envío de `tools`, detección de `tool_calls`, ejecución local y mensajes `role: "tool"` de vuelta al historial).
-- `src/services/mockTools.ts` — 3 tools de ejemplo con sus esquemas JSON y ejecutadores (`get_order_status`, `get_weather`, `get_current_time`).
-- `src/components/FoundryPlayground.tsx` — panel con editor JSON de tools, chat interactivo e inspector de `tool_calls` (argumentos y retornos en tiempo real).
+- `src/services/foundryService.ts` — cliente del endpoint de agente con `fetch` nativo: `streamAgentReply()` hace el POST con `stream: true`, parsea los eventos SSE (`response.created`, `response.output_text.delta`, `response.output_item.done`, `response.completed`…) y gestiona la conversación con `agent_session_id` + `previous_response_id`.
+- `src/components/FoundryPlayground.tsx` — chat con streaming en vivo (burbuja del asistente que se rellena delta a delta), panel de **Actividad** (peticiones, tools invocadas por el agente, respuesta final con id y duración, errores), cancelación de peticiones y "Nueva conversación" (reset de sesión).
+
+Las tools las ejecuta **el agente en servidor**: no hay editor de tools ni ejecución local.
 
 ## Scripts
 
@@ -38,5 +41,3 @@ npm run dev      # desarrollo con HMR
 npm run build    # typecheck (tsc -b) + build de producción
 npm run lint     # oxlint
 ```
-
-> Nota: con modelos de razonamiento tipo `gpt-5*` en Chat Completions puede ser necesario fijar `reasoning_effort` a `none` para que las function tools funcionen.

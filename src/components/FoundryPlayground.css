@@ -56,10 +56,23 @@
 
 .pg-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr) minmax(300px, 360px);
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
   gap: 12px;
   flex: 1;
   min-height: 0;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.pg-footnote {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .panel {
@@ -68,8 +81,9 @@
   min-height: 0;
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--bg);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
   overflow: hidden;
 }
 
@@ -128,49 +142,6 @@
 .btn-primary {
   background: var(--accent-bg);
   border-color: var(--accent-border);
-}
-
-/* Editor JSON ------------------------------------------------------------- */
-
-.editor-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.tools-editor {
-  flex: 1;
-  width: 100%;
-  min-height: 320px;
-  resize: vertical;
-  font-family: var(--mono);
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--text-h);
-  background: var(--code-bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px;
-  box-sizing: border-box;
-}
-
-.tools-editor:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.editor-status {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.45;
-}
-
-.editor-status.ok {
-  color: #16a34a;
-}
-
-.editor-status.err {
-  color: #dc2626;
 }
 
 /* Chat -------------------------------------------------------------------- */
@@ -261,6 +232,9 @@
   padding: 10px 12px;
   border-top: 1px solid var(--border);
   background: var(--code-bg);
+  flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
 }
 
 .chat-input textarea {
@@ -396,24 +370,19 @@
 @media (max-width: 1100px) {
   .pg-grid {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1.5fr) minmax(0, 1fr);
   }
 
   .pg-grid .panel {
-    min-height: 340px;
-  }
-
-  .tools-editor {
-    min-height: 220px;
+    min-height: 0;
   }
 }
 
 @media (prefers-color-scheme: dark) {
-  .editor-status.ok,
   .badge-final {
     color: #4ade80;
   }
 
-  .editor-status.err,
   .badge-error,
   .event-error {
     color: #f87171;

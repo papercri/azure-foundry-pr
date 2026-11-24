@@ -1,25 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  chatWithTools,
-  readFoundryConfig,
-  type ChatMessage,
+  readAgentConfig,
+  streamAgentReply,
   type PlaygroundEvent,
-  type ToolDefinition,
 } from '../services/foundryService'
-import { DEFAULT_TOOLS_JSON, executeTool } from '../services/mockTools'
 import './FoundryPlayground.css'
 
-const SYSTEM_PROMPT =
-  'Eres un asistente útil con acceso a herramientas. Usa las tools disponibles cuando ayuden a responder con precisión.'
-
 const SUGGESTIONS = [
-  '¿Cuál es el estado del pedido A-1024?',
-  '¿Qué tiempo hace en Madrid en celsius?',
-  '¿Qué hora es ahora en Europe/Madrid?',
+  'Hola, ¿qué puedes hacer?',
+  'Lista las herramientas de las que dispones',
+  'Resume en 3 puntos cómo funciona este agente',
 ]
 
-function createInitialMessages(): ChatMessage[] {
-  return [{ role: 'system', content: SYSTEM_PROMPT }]
+interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
 }
 
 function prettyJson(raw: string): string {
@@ -39,60 +34,33 @@ function formatTime(at: number): string {
   return `${hh}:${mm}:${ss}.${ms}`
 }
 
-interface ParsedTools {
-  tools: ToolDefinition[]
-  error: string | null
-}
-
-function parseTools(raw: string): ParsedTools {
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) throw new Error('El editor debe contener un array de tools: [ ... ]')
-    parsed.forEach((tool, index) => {
-      const candidate = tool as ToolDefinition | null
-      if (candidate?.type !== 'function' || !candidate.function?.name) {
-        throw new Error(`La entrada [${index}] debe ser { type: "function", function: { name, parameters } }`)
-      }
-      if (typeof candidate.function.parameters !== 'object' || candidate.function.parameters === null) {
-        throw new Error(`La tool "${candidate.function.name}" necesita "parameters" (JSON Schema)`)
-      }
-    })
-    return { tools: parsed as ToolDefinition[], error: null }
-  } catch (error) {
-    return { tools: [], error: error instanceof Error ? error.message : String(error) }
-  }
+function agentNameFromEndpoint(endpoint: string): string {
+  return /\/agents\/([^/]+)/.exec(endpoint)?.[1] ?? '—'
 }
 
 function FoundryPlayground() {
-  const { config, missing } = useMemo(() => readFoundryConfig(), [])
+  const { config, missing } = useMemo(() => readAgentConfig(), [])
 
-  const [toolsJson, setToolsJson] = useState(DEFAULT_TOOLS_JSON)
-  const parsedTools = useMemo(() => parseTools(toolsJson), [toolsJson])
-
-  const [messages, setMessages] = useState<ChatMessage[]>(createInitialMessages)
+  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [events, setEvents] = useState<PlaygroundEvent[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [streamingText, setStreamingText] = useState<string | null>(null)
+  const [agentSessionId, setAgentSessionId] = useState<string | undefined>(undefined)
+  const [previousResponseId, setPreviousResponseId] = useState<string | undefined>(undefined)
+  const [turn, setTurn] = useState(0)
 
   const chatBodyRef = useRef<HTMLDivElement>(null)
-
-  const toolNamesById = useMemo(() => {
-    const map: Record<string, string> = {}
-    for (const message of messages) {
-      for (const call of message.tool_calls ?? []) {
-        map[call.id] = call.function.name
-      }
-    }
-    return map
-  }, [messages])
+  const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     const element = chatBodyRef.current
     if (element) element.scrollTop = element.scrollHeight
-  }, [messages, busy])
+  }, [messages, streamingText, busy])
 
-  const canSend =
-    !busy && input.trim().length > 0 && parsedTools.error === null && missing.length === 0
+  const canSend = !busy && input.trim().length > 0 && missing.length === 0
+
+  const pushEvent = (event: PlaygroundEvent) => setEvents((previous) => [...previous, event])
 
   async function handleSend(text?: string) {
     const content = (text ?? input).trim()
@@ -100,119 +68,97 @@ function FoundryPlayground() {
 
     setInput('')
     setBusy(true)
+    setStreamingText('')
+    setMessages((previous) => [...previous, { role: 'user', content }])
 
-    const history: ChatMessage[] = [...messages, { role: 'user', content }]
-    setMessages(history)
+    const controller = new AbortController()
+    abortRef.current = controller
 
     try {
-      const result = await chatWithTools({
-        messages: history,
-        tools: parsedTools.tools,
-        executeTool,
-        onEvent: (event) => setEvents((previous) => [...previous, event]),
+      const result = await streamAgentReply({
+        input: content,
+        round: turn + 1,
+        agentSessionId,
+        previousResponseId,
+        signal: controller.signal,
+        onEvent: pushEvent,
+        onTextDelta: (delta) => setStreamingText((previous) => (previous ?? '') + delta),
       })
-      setMessages(result.messages)
+      setMessages((previous) => [...previous, { role: 'assistant', content: result.text }])
+      if (result.agentSessionId) setAgentSessionId(result.agentSessionId)
+      if (result.responseId) setPreviousResponseId(result.responseId)
+      setTurn((previous) => previous + 1)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      setMessages([...history, { role: 'assistant', content: `Error: ${message}` }])
-      setEvents((previous) => [...previous, { type: 'error', at: Date.now(), message }])
+      setMessages((previous) => [...previous, { role: 'assistant', content: `Error: ${message}` }])
+      pushEvent({ type: 'error', at: Date.now(), message })
     } finally {
+      setStreamingText(null)
       setBusy(false)
+      abortRef.current = null
     }
+  }
+
+  function handleCancel() {
+    abortRef.current?.abort()
   }
 
   function resetConversation() {
     if (busy) return
-    setMessages(createInitialMessages())
+    setMessages([])
     setEvents([])
+    setAgentSessionId(undefined)
+    setPreviousResponseId(undefined)
+    setTurn(0)
   }
 
   return (
     <div className="playground">
       <header className="pg-header">
         <div>
-          <h1>Azure AI Foundry · Tool Calling Playground</h1>
+          <h1>Azure AI Foundry · Agent Playground</h1>
           <p className="pg-sub">
-            Editor de tools JSON Schema, chat y inspector de <code>tool_calls</code> en vivo.
+            Conversa con tu agente por el protocolo <code>openai/responses</code> con streaming en vivo y
+            traza de actividad.
           </p>
         </div>
         <div className="pg-chips">
-          <span className="chip">deployment: {config.deployment || '—'}</span>
+          <span className="chip" title={config.endpoint}>
+            agente: {agentNameFromEndpoint(config.endpoint)}
+          </span>
           <span className="chip">api-version: {config.apiVersion || '—'}</span>
+          {agentSessionId && (
+            <span className="chip" title={agentSessionId}>
+              sesión: {agentSessionId.slice(0, 12)}…
+            </span>
+          )}
         </div>
       </header>
 
       {missing.length > 0 && (
         <div className="pg-banner" role="alert">
-          Faltan variables en <code>.env</code>: {missing.join(', ')} — complétalas en <code>.env</code>{' '}
-          (hay una plantilla en <code>.env.example</code>).
+          Faltan variables en <code>.env</code>: {missing.join(', ')} — pega la URL del agente (Foundry →
+          agente → Test) en <code>VITE_AZURE_FOUNDRY_AGENT_ENDPOINT</code>.
         </div>
       )}
 
       <div className="pg-grid">
-        <section className="panel" aria-label="Editor de tools">
-          <div className="panel-head">
-            <h2>Tools (JSON Schema)</h2>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setToolsJson(DEFAULT_TOOLS_JSON)}
-              disabled={busy}
-            >
-              Restaurar
-            </button>
-          </div>
-          <div className="panel-body editor-body">
-            <textarea
-              className="tools-editor"
-              value={toolsJson}
-              spellCheck={false}
-              aria-label="Definición JSON de las tools"
-              onChange={(event) => setToolsJson(event.target.value)}
-            />
-            <p className={`editor-status ${parsedTools.error ? 'err' : 'ok'}`}>
-              {parsedTools.error
-                ? parsedTools.error
-                : `JSON válido · ${parsedTools.tools.length} tool(s): ${
-                    parsedTools.tools.map((tool) => tool.function.name).join(', ') || 'ninguna'
-                  }`}
-            </p>
-          </div>
-        </section>
-
-        <section className="panel" aria-label="Chat de pruebas">
+        <section className="panel panel-chat" aria-label="Chat con el agente">
           <div className="panel-head">
             <h2>Chat</h2>
-            <button type="button" className="btn" onClick={resetConversation} disabled={busy}>
-              Nueva conversación
-            </button>
+            <div className="panel-actions">
+              {busy && (
+                <button type="button" className="btn" onClick={handleCancel}>
+                  Cancelar
+                </button>
+              )}
+              <button type="button" className="btn" onClick={resetConversation} disabled={busy}>
+                Nueva conversación
+              </button>
+            </div>
           </div>
           <div className="panel-body chat-body" ref={chatBodyRef}>
-            {messages.map((message, index) => {
-              if (message.role === 'tool') {
-                return (
-                  <div className="msg msg-tool" key={`msg-${index}`}>
-                    <span className="msg-role">tool · {toolNamesById[message.tool_call_id ?? ''] ?? 'desconocida'}</span>
-                    {message.content}
-                  </div>
-                )
-              }
-              if (message.role === 'system') {
-                return (
-                  <div className="msg msg-system" key={`msg-${index}`}>
-                    system · {message.content}
-                  </div>
-                )
-              }
-              return (
-                <div className={`msg msg-${message.role}`} key={`msg-${index}`}>
-                  <span className="msg-role">{message.role}</span>
-                  {message.content}
-                </div>
-              )
-            })}
-            {busy && <div className="typing">El modelo está decidiendo si llama tools…</div>}
-            {!busy && messages.length <= 1 && (
+            {messages.length === 0 && streamingText === null && !busy && (
               <div className="suggestions">
                 {SUGGESTIONS.map((suggestion) => (
                   <button
@@ -226,6 +172,25 @@ function FoundryPlayground() {
                   </button>
                 ))}
               </div>
+            )}
+            {messages.map((message, index) => (
+              <div className={`msg msg-${message.role}`} key={`msg-${index}`}>
+                <span className="msg-role">{message.role}</span>
+                {message.content}
+              </div>
+            ))}
+            {streamingText !== null && (
+              <div className="msg msg-assistant">
+                <span className="msg-role">assistant</span>
+                {streamingText === '' ? (
+                  <span className="typing">El agente está trabajando…</span>
+                ) : (
+                  streamingText
+                )}
+              </div>
+            )}
+            {busy && streamingText === null && (
+              <div className="typing">Conectando con el agente…</div>
             )}
           </div>
           <div className="chat-input">
@@ -241,15 +206,20 @@ function FoundryPlayground() {
                 }
               }}
             />
-            <button type="button" className="btn btn-primary" onClick={() => void handleSend()} disabled={!canSend}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void handleSend()}
+              disabled={!canSend}
+            >
               {busy ? 'Enviando…' : 'Enviar'}
             </button>
           </div>
         </section>
 
-        <section className="panel" aria-label="Inspector de tool calls">
+        <section className="panel" aria-label="Actividad del agente">
           <div className="panel-head">
-            <h2>Inspector</h2>
+            <h2>Actividad</h2>
             <button type="button" className="btn" onClick={() => setEvents([])} disabled={busy}>
               Limpiar
             </button>
@@ -257,8 +227,8 @@ function FoundryPlayground() {
           <div className="panel-body inspector-body">
             {events.length === 0 && (
               <p className="inspector-empty">
-                Sin actividad todavía. Aquí verás cada <code>tool_calls</code>, sus argumentos y el retorno de cada
-                función.
+                Sin actividad todavía. Aquí verás cada petición, la respuesta del agente, sus llamadas a
+                herramientas y la respuesta final.
               </p>
             )}
             {events.map((event, index) => {
@@ -271,35 +241,38 @@ function FoundryPlayground() {
                       <time>{formatTime(event.at)}</time>
                     </div>
                     <p className="event-text">
-                      {event.messageCount} mensaje(s) · {event.toolCount} tool(s) enviadas
+                      {event.previousResponseId
+                        ? `previous_response_id: ${event.previousResponseId}`
+                        : 'primera respuesta (sin historial)'}
+                      {event.sessionId ? ` · sesión: ${event.sessionId}` : ''}
                     </p>
+                    <p className="event-label">input</p>
+                    <pre>{event.input}</pre>
                   </article>
                 )
               }
-              if (event.type === 'tool_calls') {
+              if (event.type === 'response_created') {
                 return (
                   <article className="event" key={key}>
                     <div className="event-head">
-                      <span className="badge badge-calls">tool_calls ×{event.toolCalls.length}</span>
+                      <span className="badge badge-request">response.created</span>
                       <time>{formatTime(event.at)}</time>
                     </div>
-                    <pre>{prettyJson(JSON.stringify(event.toolCalls, null, 2))}</pre>
+                    <p className="event-text">id: {event.responseId}</p>
                   </article>
                 )
               }
-              if (event.type === 'tool_result') {
+              if (event.type === 'output_item') {
+                const isCall = event.kind === 'function_call'
                 return (
-                  <article className={`event ${event.error ? 'event-error' : ''}`} key={key}>
+                  <article className="event" key={key}>
                     <div className="event-head">
-                      <span className="badge badge-result">
-                        {event.name} · {event.durationMs}ms
+                      <span className={`badge ${isCall ? 'badge-calls' : 'badge-result'}`}>
+                        {isCall ? `tool · ${event.name ?? 'función'}` : event.kind}
                       </span>
                       <time>{formatTime(event.at)}</time>
                     </div>
-                    <p className="event-label">argumentos del modelo</p>
-                    <pre>{prettyJson(event.arguments)}</pre>
-                    <p className="event-label">{event.error ? 'error de la función' : 'retorno de la función'}</p>
-                    <pre>{prettyJson(event.result)}</pre>
+                    <pre>{prettyJson(JSON.stringify(event.payload, null, 2))}</pre>
                   </article>
                 )
               }
@@ -307,10 +280,13 @@ function FoundryPlayground() {
                 return (
                   <article className="event" key={key}>
                     <div className="event-head">
-                      <span className="badge badge-final">respuesta final</span>
+                      <span className="badge badge-final">final · {event.durationMs}ms</span>
                       <time>{formatTime(event.at)}</time>
                     </div>
-                    <p className="event-text">{event.content}</p>
+                    <p className="event-text">
+                      {event.responseId ? `id: ${event.responseId}` : 'sin id de respuesta'}
+                    </p>
+                    {event.content && <p className="event-text">{event.content}</p>}
                   </article>
                 )
               }
@@ -327,6 +303,10 @@ function FoundryPlayground() {
           </div>
         </section>
       </div>
+      <p className="pg-footnote">
+        turno actual: {turn}
+        {previousResponseId ? ` · previous_response_id: ${previousResponseId}` : ''}
+      </p>
     </div>
   )
 }
