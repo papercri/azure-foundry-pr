@@ -1,283 +1,310 @@
 /**
- * Capa de servicio para Azure AI Foundry (Chat Completions + tool calling)
- * usando `fetch` nativo: sin SDK, sin dependencias extra.
+ * Capa de servicio para el endpoint de agente de Azure AI Foundry
+ * (protocolo OpenAI Responses) usando `fetch` nativo: sin SDK, sin dependencias extra.
  *
- * Soporta los dos formatos de endpoint habituales:
- *  - Azure OpenAI clásico : https://<recurso>.openai.azure.com
- *  - Foundry Models       : https://<recurso>.services.ai.azure.com/models
+ * La URL cambia cada vez que se recrea el agente, así que se configura completa
+ * en VITE_AZURE_FOUNDRY_AGENT_ENDPOINT y termina en
+ * .../api/projects/{proj}/agents/{agente}/endpoint/protocols/openai/responses
  */
 
-export interface ToolCall {
-  id: string
-  type: 'function'
-  function: {
-    name: string
-    arguments: string
-  }
-}
-
-export type ToolRole = 'system' | 'user' | 'assistant' | 'tool'
-
-export interface ChatMessage {
-  role: ToolRole
-  content: string | null
-  tool_calls?: ToolCall[]
-  tool_call_id?: string
-}
-
-export interface ToolDefinition {
-  type: 'function'
-  function: {
-    name: string
-    description?: string
-    parameters: Record<string, unknown>
-  }
-}
-
-export interface FoundryConfig {
+export interface AgentConfig {
   endpoint: string
   apiKey: string
-  deployment: string
   apiVersion: string
+  model?: string
 }
 
-/** Ejecuta una tool local y devuelve un resultado serializable a JSON. */
-export type ToolExecutor = (name: string, argsJson: string) => Promise<unknown>
-
 export type PlaygroundEvent =
-  | { type: 'request'; at: number; round: number; messageCount: number; toolCount: number }
-  | { type: 'tool_calls'; at: number; round: number; toolCalls: ToolCall[] }
+  | { type: 'request'; at: number; round: number; input: string; sessionId?: string; previousResponseId?: string }
+  | { type: 'response_created'; at: number; responseId: string }
   | {
-      type: 'tool_result'
+      type: 'output_item'
       at: number
-      round: number
-      toolCallId: string
-      name: string
-      arguments: string
-      result: string
-      durationMs: number
-      error?: string
+      kind: 'function_call' | 'reasoning' | 'other'
+      name?: string
+      callId?: string
+      payload: unknown
     }
-  | { type: 'final'; at: number; round: number; content: string }
+  | { type: 'final'; at: number; content: string; responseId?: string; durationMs: number }
   | { type: 'error'; at: number; message: string }
 
-export interface ChatWithToolsOptions {
-  messages: ChatMessage[]
-  tools: ToolDefinition[]
-  executeTool: ToolExecutor
+export interface StreamAgentOptions {
+  input: string
+  round?: number
+  agentSessionId?: string
+  previousResponseId?: string
   onEvent?: (event: PlaygroundEvent) => void
-  maxRounds?: number
-  temperature?: number
+  onTextDelta?: (delta: string) => void
   signal?: AbortSignal
 }
 
-export interface ChatWithToolsResult {
-  /** Historial completo: incluye assistant con tool_calls y mensajes role:"tool". */
-  messages: ChatMessage[]
-  finalMessage: ChatMessage
-  rounds: number
+export interface StreamAgentResult {
+  text: string
+  responseId?: string
+  agentSessionId?: string
+  durationMs: number
 }
 
-export function readFoundryConfig(): { config: FoundryConfig; missing: string[] } {
-  const endpoint = import.meta.env.VITE_AZURE_FOUNDRY_ENDPOINT ?? ''
-  const apiKey = import.meta.env.VITE_AZURE_FOUNDRY_API_KEY ?? ''
-  const deployment = import.meta.env.VITE_AZURE_DEPLOYMENT_NAME ?? ''
-  const apiVersion = import.meta.env.VITE_AZURE_API_VERSION ?? ''
+export function readAgentConfig(): { config: AgentConfig; missing: string[] } {
+  const endpoint = (import.meta.env.VITE_AZURE_FOUNDRY_AGENT_ENDPOINT ?? '').trim()
+  const apiKey = (import.meta.env.VITE_AZURE_FOUNDRY_API_KEY ?? '').trim()
+  const apiVersion = (import.meta.env.VITE_AZURE_API_VERSION ?? 'v1').trim()
+  const model = (import.meta.env.VITE_AZURE_DEPLOYMENT_NAME ?? '').trim()
 
   const missing: string[] = []
-  if (!endpoint.trim()) missing.push('VITE_AZURE_FOUNDRY_ENDPOINT')
-  if (!apiKey.trim()) missing.push('VITE_AZURE_FOUNDRY_API_KEY')
-  if (!deployment.trim()) missing.push('VITE_AZURE_DEPLOYMENT_NAME')
-  if (!apiVersion.trim()) missing.push('VITE_AZURE_API_VERSION')
+  if (!endpoint) missing.push('VITE_AZURE_FOUNDRY_AGENT_ENDPOINT')
+  if (!apiKey) missing.push('VITE_AZURE_FOUNDRY_API_KEY')
 
-  return {
-    config: { endpoint: endpoint.trim(), apiKey: apiKey.trim(), deployment: deployment.trim(), apiVersion: apiVersion.trim() },
-    missing,
-  }
+  return { config: { endpoint, apiKey, apiVersion, model: model || undefined }, missing }
 }
 
-/**
- * Construye la URL de Chat Completions a partir del endpoint configurado.
- * Si el endpoint no encaja con un patrón conocido se asume una base OpenAI
- * compatible y se añade `/chat/completions`.
- */
-export function buildChatCompletionsUrl(config: FoundryConfig): string {
+/** Añade ?api-version= a la URL del agente si no lo trae ya. */
+export function buildAgentUrl(config: AgentConfig): string {
   const endpoint = config.endpoint.replace(/\/+$/, '')
-  const version = config.apiVersion
-  const query = version ? `?api-version=${encodeURIComponent(version)}` : ''
-
-  if (/\/chat\/completions$/i.test(endpoint)) return `${endpoint}${query}`
-
-  // Azure OpenAI v1 (OpenAI-compatible): .../openai/v1/chat/completions
-  if (/\/openai\/v\d+(\/preview)?$/i.test(endpoint)) {
-    return `${endpoint}/chat/completions${query}`
-  }
-
-  // Azure OpenAI clásico: /openai/deployments/{deployment}/chat/completions
-  if (/(^|\/\/)[^/]*\.openai\.azure\.com(\/|$)/i.test(endpoint) || /\/openai\/deployments\//i.test(endpoint)) {
-    if (/\/openai\/deployments\/[^/]+$/i.test(endpoint)) {
-      return `${endpoint}/chat/completions${query}`
-    }
-    return `${endpoint}/openai/deployments/${encodeURIComponent(config.deployment)}/chat/completions${query}`
-  }
-
-  // Azure AI Foundry Models (Model Inference API): /models/chat/completions
-  if (/\.services\.ai\.azure\.com/i.test(endpoint) || /\/models$/i.test(endpoint)) {
-    return `${endpoint}/chat/completions${query}`
-  }
-
-  // Núcleo OpenAI-compatible (p. ej. http://localhost:1234/v1)
-  if (/\/openai\/v\d/i.test(endpoint) || /\/v\d$/i.test(endpoint)) {
-    return `${endpoint}/chat/completions${query}`
-  }
-
-  return `${endpoint}/chat/completions${query}`
+  if (!config.apiVersion || /[?&]api-version=/.test(endpoint)) return endpoint
+  return `${endpoint}?api-version=${encodeURIComponent(config.apiVersion)}`
 }
 
-interface ChatCompletionsResponse {
-  choices?: Array<{
-    index?: number
-    message?: {
-      role?: string
-      content?: string | null
-      tool_calls?: ToolCall[]
-    }
-    finish_reason?: string
-  }>
-  error?: { message?: string }
-}
-
-/** Una única llamada a Chat Completions. */
-async function chatCompletion(
-  config: FoundryConfig,
-  body: Record<string, unknown>,
-  signal?: AbortSignal,
-): Promise<ChatCompletionsResponse> {
-  const url = buildChatCompletionsUrl(config)
-
-  let response: Response
+function buildHeaders(config: AgentConfig): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (/^[\w-]+\.[\w-]+\.[\w-]+$/.test(config.apiKey)) {
     headers.Authorization = `Bearer ${config.apiKey}` // token AAD (JWT)
   } else if (config.apiKey) {
-    headers['api-key'] = config.apiKey // clave clásica de Azure OpenAI
+    headers['api-key'] = config.apiKey // clave clásica de Azure
   }
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      signal,
-      headers,
-      body: JSON.stringify(body),
-    })
-  } catch (error) {
-    throw new Error(`No se pudo contactar con el endpoint (${url}): ${errorMessage(error)}`)
-  }
-
-  const text = await response.text()
-  let data: ChatCompletionsResponse | null = null
-  try {
-    data = text ? (JSON.parse(text) as ChatCompletionsResponse) : null
-  } catch {
-    data = null
-  }
-
-  if (!response.ok) {
-    const detail = data?.error?.message ?? text.slice(0, 400)
-    throw new Error(`Azure devolvió HTTP ${response.status}: ${detail}`)
-  }
-  if (!data) throw new Error('Respuesta no-JSON del endpoint de Azure')
-  return data
+  return headers
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/**
- * Ciclo completo de tool calling:
- * 1. envía historial + definiciones `tools`
- * 2. si la respuesta contiene `tool_calls`, ejecuta las funciones locales
- * 3. devuelve los mensajes con `role: "tool"` al historial
- * 4. repite hasta obtener una respuesta final sin tool_calls
- */
-export async function chatWithTools(options: ChatWithToolsOptions): Promise<ChatWithToolsResult> {
-  const { config, missing } = readFoundryConfig()
-  if (missing.length > 0) {
-    throw new Error(`Faltan variables de entorno: ${missing.join(', ')}`)
+interface ResponsesApiEvent {
+  type?: string
+  delta?: string
+  response?: {
+    id?: string
+    agent_session_id?: string
+    error?: { message?: string }
+    output?: unknown[]
   }
+  item?: {
+    type?: string
+    id?: string
+    call_id?: string
+    name?: string
+    arguments?: string
+    summary?: unknown
+  }
+  error?: { message?: string } | string
+}
 
-  const maxRounds = options.maxRounds ?? 5
-  const history: ChatMessage[] = options.messages.map((message) => ({ ...message }))
+function apiErrorMessage(payload: ResponsesApiEvent): string | undefined {
+  if (typeof payload.error === 'string') return payload.error
+  if (payload.error && typeof payload.error === 'object' && 'message' in payload.error) {
+    return payload.error.message
+  }
+  return payload.response?.error?.message
+}
+
+function extractTextFromJson(data: Record<string, unknown>): string {
+  if (typeof data.output_text === 'string') return data.output_text
+  const output = Array.isArray(data.output) ? data.output : []
+  const parts: string[] = []
+  for (const item of output) {
+    const candidate = item as { type?: string; content?: Array<{ type?: string; text?: string }> }
+    if (candidate?.type !== 'message' || !Array.isArray(candidate.content)) continue
+    for (const part of candidate.content) {
+      if (part?.type === 'output_text' && typeof part.text === 'string') parts.push(part.text)
+    }
+  }
+  return parts.join('')
+}
+
+function dispatchStreamEvent(
+  payload: ResponsesApiEvent,
+  state: { text: string; responseId?: string; agentSessionId?: string },
+  options: StreamAgentOptions,
+): string | null {
   const emit = options.onEvent ?? (() => undefined)
 
-  for (let round = 1; round <= maxRounds; round++) {
-    const body: Record<string, unknown> = {
-      messages: history,
-    }
-    if (options.temperature !== undefined) body.temperature = options.temperature
-    if (options.tools.length > 0) {
-      body.tools = options.tools
-      body.tool_choice = 'auto'
-    }
-    // Tanto la Model Inference API como OpenAI v1 requieren el modelo en el body.
-    if (/\/openai\/v\d/i.test(config.endpoint) || /services\.ai\.azure\.com|\/models$/i.test(config.endpoint)) {
-      body.model = config.deployment
-    }
-
-    emit({ type: 'request', at: Date.now(), round, messageCount: history.length, toolCount: options.tools.length })
-
-    const data = await chatCompletion(config, body, options.signal)
-    const message = data.choices?.[0]?.message
-    if (!message) throw new Error('La respuesta no contiene choices[0].message')
-
-    const toolCalls = message.tool_calls ?? []
-
-    if (toolCalls.length === 0) {
-      const finalMessage: ChatMessage = {
-        role: 'assistant',
-        content: message.content ?? '',
+  switch (payload.type) {
+    case 'response.created': {
+      const responseId = payload.response?.id
+      if (responseId) {
+        state.responseId = responseId
+        emit({ type: 'response_created', at: Date.now(), responseId })
       }
-      history.push(finalMessage)
-      emit({ type: 'final', at: Date.now(), round, content: finalMessage.content ?? '' })
-      return { messages: history, finalMessage, rounds: round }
+      if (payload.response?.agent_session_id) state.agentSessionId = payload.response.agent_session_id
+      return null
     }
+    case 'response.output_text.delta': {
+      const delta = payload.delta ?? ''
+      if (delta) {
+        state.text += delta
+        options.onTextDelta?.(delta)
+      }
+      return null
+    }
+    case 'response.output_item.done': {
+      const item = payload.item
+      if (!item) return null
+      if (item.type === 'function_call' || item.type === 'custom_tool_call') {
+        emit({
+          type: 'output_item',
+          at: Date.now(),
+          kind: 'function_call',
+          name: item.name,
+          callId: item.call_id ?? item.id,
+          payload: item,
+        })
+      } else if (item.type === 'reasoning') {
+        emit({ type: 'output_item', at: Date.now(), kind: 'reasoning', payload: item })
+      } else if (item.type !== 'message') {
+        emit({ type: 'output_item', at: Date.now(), kind: 'other', payload: item })
+      }
+      return null
+    }
+    case 'response.completed': {
+      if (payload.response?.id) state.responseId = payload.response.id
+      if (payload.response?.agent_session_id) state.agentSessionId = payload.response.agent_session_id
+      return null
+    }
+    case 'response.failed':
+    case 'error': {
+      return apiErrorMessage(payload) ?? 'El agente devolvió un evento de error'
+    }
+    default:
+      return null
+  }
+}
 
-    history.push({
-      role: 'assistant',
-      content: message.content ?? null,
-      tool_calls: toolCalls,
+/**
+ * Envía un turno al agente con streaming SSE y devuelve el texto acumulado.
+ * Emite eventos al inspector (onEvent) y deltas de texto (onTextDelta).
+ */
+export async function streamAgentReply(options: StreamAgentOptions): Promise<StreamAgentResult> {
+  const { config, missing } = readAgentConfig()
+  if (missing.length > 0) throw new Error(`Faltan variables de entorno: ${missing.join(', ')}`)
+
+  const url = buildAgentUrl(config)
+  const body: Record<string, unknown> = { input: options.input, stream: true }
+  if (config.model) body.model = config.model
+  if (options.agentSessionId) body.agent_session_id = options.agentSessionId
+  if (options.previousResponseId) body.previous_response_id = options.previousResponseId
+
+  const startedAt = performance.now()
+  const emit = options.onEvent ?? (() => undefined)
+
+  emit({
+    type: 'request',
+    at: Date.now(),
+    round: options.round ?? 1,
+    input: options.input,
+    sessionId: options.agentSessionId,
+    previousResponseId: options.previousResponseId,
+  })
+
+  let response: Response
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      signal: options.signal,
+      headers: buildHeaders(config),
+      body: JSON.stringify(body),
     })
-    emit({ type: 'tool_calls', at: Date.now(), round, toolCalls })
-
-    for (const call of toolCalls) {
-      const startedAt = performance.now()
-      let result = ''
-      let error: string | undefined
-      try {
-        const value = await options.executeTool(call.function.name, call.function.arguments)
-        result = JSON.stringify(value, null, 2)
-      } catch (execError) {
-        error = errorMessage(execError)
-        result = JSON.stringify({ error })
-      }
-      history.push({
-        role: 'tool',
-        tool_call_id: call.id,
-        content: result,
-      })
-      emit({
-        type: 'tool_result',
-        at: Date.now(),
-        round,
-        toolCallId: call.id,
-        name: call.function.name,
-        arguments: call.function.arguments,
-        result,
-        durationMs: Math.round(performance.now() - startedAt),
-        error,
-      })
-    }
+  } catch (error) {
+    if (options.signal?.aborted) throw new Error('Petición cancelada')
+    throw new Error(`No se pudo contactar con el endpoint (${url}): ${errorMessage(error)}`)
   }
 
-  throw new Error(`El ciclo de tool calling superó las ${maxRounds} rondas sin respuesta final`)
+  // Cabecera de sesión (devuelta incluso en errores, según la doc de Foundry)
+  const headerSession = response.headers.get('x-agent-session-id') ?? undefined
+
+  const contentType = response.headers.get('content-type') ?? ''
+
+  if (!response.ok) {
+    // Solo aquí se consume el body entero: en caso contrario se leería como stream.
+    const raw = await response.text()
+    let detail = raw.slice(0, 400)
+    try {
+      const parsed = JSON.parse(raw) as { error?: { message?: string }; message?: string }
+      detail = parsed.error?.message ?? parsed.message ?? detail
+    } catch {
+      /* se queda con el texto crudo */
+    }
+    throw new Error(`Azure devolvió HTTP ${response.status}: ${detail}`)
+  }
+
+  const state: { text: string; responseId?: string; agentSessionId?: string } = {
+    text: '',
+    agentSessionId: headerSession,
+  }
+
+  // Respuesta sin stream (si el servidor ignoró stream:true)
+  if (contentType.includes('application/json')) {
+    const raw = await response.text()
+    let data: Record<string, unknown> | null = null
+    try {
+      data = raw ? (JSON.parse(raw) as Record<string, unknown>) : null
+    } catch {
+      data = null
+    }
+    if (!data) throw new Error('Respuesta no-JSON del endpoint del agente')
+    const failure = apiErrorMessage(data as ResponsesApiEvent)
+    if (failure) throw new Error(failure)
+    state.text = extractTextFromJson(data)
+    const responseData = data.response as { id?: string; agent_session_id?: string } | undefined
+    state.responseId = responseData?.id ?? (typeof data.id === 'string' ? data.id : undefined)
+    state.agentSessionId = responseData?.agent_session_id ?? state.agentSessionId
+    if (state.text) options.onTextDelta?.(state.text)
+    emit({ type: 'response_created', at: Date.now(), responseId: state.responseId ?? 'n/d' })
+    const durationMs = Math.round(performance.now() - startedAt)
+    emit({ type: 'final', at: Date.now(), content: state.text, responseId: state.responseId, durationMs })
+    return { ...state, durationMs }
+  }
+
+  // Streaming SSE: leer el body línea a línea
+  if (!response.body) throw new Error('El endpoint no devolvió un stream legible')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const errorState: { message: string | null } = { message: null }
+
+  const handleLine = (line: string) => {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) return
+    const payloadRaw = trimmed.slice(5).trim()
+    if (!payloadRaw || payloadRaw === '[DONE]') return
+    let payload: ResponsesApiEvent
+    try {
+      payload = JSON.parse(payloadRaw) as ResponsesApiEvent
+    } catch {
+      return
+    }
+    const failure = dispatchStreamEvent(payload, state, options)
+    if (failure && !errorState.message) errorState.message = failure
+  }
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop() ?? ''
+      for (const line of lines) handleLine(line)
+    }
+    buffer += decoder.decode()
+    if (buffer) handleLine(buffer)
+  } catch (error) {
+    if (options.signal?.aborted) throw new Error('Petición cancelada')
+    throw new Error(`Stream interrumpido: ${errorMessage(error)}`)
+  }
+
+  if (errorState.message) throw new Error(errorState.message)
+
+  const durationMs = Math.round(performance.now() - startedAt)
+  emit({ type: 'final', at: Date.now(), content: state.text, responseId: state.responseId, durationMs })
+  return { ...state, durationMs }
 }
