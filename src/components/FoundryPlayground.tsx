@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { streamAgentReply, type PlaygroundEvent } from '../services/foundryService'
 import {
-  readAgentConfig,
-  streamAgentReply,
-  type PlaygroundEvent,
-} from '../services/foundryService'
+  loadAgentConfig,
+  missingConfigFields,
+  saveAgentConfig,
+  type AgentConfig,
+} from '../services/agentConfig'
+import ConfigModal from './ConfigModal'
 import './FoundryPlayground.css'
 
 const SUGGESTIONS = [
@@ -39,7 +42,8 @@ function agentNameFromEndpoint(endpoint: string): string {
 }
 
 function FoundryPlayground() {
-  const { config, missing } = useMemo(() => readAgentConfig(), [])
+  const [config, setConfig] = useState<AgentConfig>(() => loadAgentConfig())
+  const [configOpen, setConfigOpen] = useState(true)
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [events, setEvents] = useState<PlaygroundEvent[]>([])
@@ -53,12 +57,14 @@ function FoundryPlayground() {
   const chatBodyRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
+  const missing = missingConfigFields(config)
+
   useEffect(() => {
     const element = chatBodyRef.current
     if (element) element.scrollTop = element.scrollHeight
   }, [messages, streamingText, busy])
 
-  const canSend = !busy && input.trim().length > 0 && missing.length === 0
+  const canSend = !busy && input.trim().length > 0 && missing.length === 0 && !configOpen
 
   const pushEvent = (event: PlaygroundEvent) => setEvents((previous) => [...previous, event])
 
@@ -112,6 +118,16 @@ function FoundryPlayground() {
     setTurn(0)
   }
 
+  function handleSaveConfig(next: AgentConfig) {
+    abortRef.current?.abort()
+    saveAgentConfig(next)
+    setConfig(next)
+    setConfigOpen(false)
+    setAgentSessionId(undefined)
+    setPreviousResponseId(undefined)
+    setTurn(0)
+  }
+
   return (
     <div className="playground">
       <header className="pg-header">
@@ -123,6 +139,9 @@ function FoundryPlayground() {
           </p>
         </div>
         <div className="pg-chips">
+          <button type="button" className="btn" onClick={() => setConfigOpen(true)}>
+            Configuración
+          </button>
           <span className="chip" title={config.endpoint}>
             agente: {agentNameFromEndpoint(config.endpoint)}
           </span>
@@ -135,10 +154,13 @@ function FoundryPlayground() {
         </div>
       </header>
 
-      {missing.length > 0 && (
+      {missing.length > 0 && !configOpen && (
         <div className="pg-banner" role="alert">
-          Faltan variables en <code>.env</code>: {missing.join(', ')} — pega la URL del agente (Foundry →
-          agente → Test) en <code>VITE_AZURE_FOUNDRY_AGENT_ENDPOINT</code>.
+          Faltan datos de conexión: {missing.join(', ')}. Pulsa en{' '}
+          <button type="button" className="link-btn" onClick={() => setConfigOpen(true)}>
+            Configuración
+          </button>{' '}
+          para completarlos.
         </div>
       )}
 
@@ -307,6 +329,10 @@ function FoundryPlayground() {
         turno actual: {turn}
         {previousResponseId ? ` · previous_response_id: ${previousResponseId}` : ''}
       </p>
+
+      {configOpen && (
+        <ConfigModal config={config} onSave={handleSaveConfig} onClose={() => setConfigOpen(false)} />
+      )}
     </div>
   )
 }
