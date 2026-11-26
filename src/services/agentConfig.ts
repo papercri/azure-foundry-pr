@@ -1,10 +1,9 @@
 /**
  * Configuración de conexión con el agente de Azure AI Foundry.
  *
- * Proyecto de formación: NO se usa `.env`. El endpoint va en el código
- * (`DEFAULT_AGENT_CONFIG`); la API key **no se guarda en el repo** y se pega en la
- * modal que aparece en cada carga de página. Lo último que guardó el usuario se
- * conserva en `sessionStorage` para precargar la modal.
+ * Proyecto de formación: NO se usa `.env`. Ni endpoint ni API key se guardan en el
+ * repo: se introducen en la modal que aparece en cada carga de página. Lo último que
+ * guardó el usuario se conserva en `sessionStorage` para precargar la modal.
  */
 
 export interface AgentConfig {
@@ -14,10 +13,9 @@ export interface AgentConfig {
   model?: string
 }
 
-/** Valores por defecto. La clave se queda vacía a propósito: GitHub bloquea su subida. */
+/** Valores por defecto: sin endpoint ni clave en el código; solo la api-version. */
 export const DEFAULT_AGENT_CONFIG: Readonly<AgentConfig> = Object.freeze({
-  endpoint:
-    'https://testttohfoqefho.services.ai.azure.com/api/projects/XVGroup59571-proj/agents/hungry-agent-jt1m1vvj0j/endpoint/protocols/openai/responses',
+  endpoint: '',
   apiKey: '',
   apiVersion: 'v1',
 })
