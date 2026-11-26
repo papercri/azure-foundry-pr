@@ -2,17 +2,15 @@
  * Capa de servicio para el endpoint de agente de Azure AI Foundry
  * (protocolo OpenAI Responses) usando `fetch` nativo: sin SDK, sin dependencias extra.
  *
- * La URL cambia cada vez que se recrea el agente, así que se configura completa
- * en VITE_AZURE_FOUNDRY_AGENT_ENDPOINT y termina en
+ * La URL cambia cada vez que se recrea el agente: se configura en la modal de
+ * conexión (o en DEFAULT_AGENT_CONFIG) y termina en
  * .../api/projects/{proj}/agents/{agente}/endpoint/protocols/openai/responses
  */
 
-export interface AgentConfig {
-  endpoint: string
-  apiKey: string
-  apiVersion: string
-  model?: string
-}
+import { loadAgentConfig, missingConfigFields, type AgentConfig } from './agentConfig'
+
+export type { AgentConfig }
+
 
 export type PlaygroundEvent =
   | { type: 'request'; at: number; round: number; input: string; sessionId?: string; previousResponseId?: string }
@@ -46,16 +44,8 @@ export interface StreamAgentResult {
 }
 
 export function readAgentConfig(): { config: AgentConfig; missing: string[] } {
-  const endpoint = (import.meta.env.VITE_AZURE_FOUNDRY_AGENT_ENDPOINT ?? '').trim()
-  const apiKey = (import.meta.env.VITE_AZURE_FOUNDRY_API_KEY ?? '').trim()
-  const apiVersion = (import.meta.env.VITE_AZURE_API_VERSION ?? 'v1').trim()
-  const model = (import.meta.env.VITE_AZURE_DEPLOYMENT_NAME ?? '').trim()
-
-  const missing: string[] = []
-  if (!endpoint) missing.push('VITE_AZURE_FOUNDRY_AGENT_ENDPOINT')
-  if (!apiKey) missing.push('VITE_AZURE_FOUNDRY_API_KEY')
-
-  return { config: { endpoint, apiKey, apiVersion, model: model || undefined }, missing }
+  const config = loadAgentConfig()
+  return { config, missing: missingConfigFields(config) }
 }
 
 /** Añade ?api-version= a la URL del agente si no lo trae ya. */
@@ -185,7 +175,7 @@ function dispatchStreamEvent(
  */
 export async function streamAgentReply(options: StreamAgentOptions): Promise<StreamAgentResult> {
   const { config, missing } = readAgentConfig()
-  if (missing.length > 0) throw new Error(`Faltan variables de entorno: ${missing.join(', ')}`)
+  if (missing.length > 0) throw new Error(`Faltan datos de conexión: ${missing.join(', ')}`)
 
   const url = buildAgentUrl(config)
   const body: Record<string, unknown> = { input: options.input, stream: true }
