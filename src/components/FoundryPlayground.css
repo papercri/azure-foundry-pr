@@ -164,13 +164,13 @@
 .btn-primary {
   background: var(--accent-strong);
   border-color: var(--accent-strong);
-  color: #fff;
+  color: var(--on-accent);
   font-weight: 600;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #7c3aed;
-  border-color: #7c3aed;
+  background: var(--accent-strong-hover);
+  border-color: var(--accent-strong-hover);
 }
 
 /* Chat -------------------------------------------------------------------- */

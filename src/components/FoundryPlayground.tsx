@@ -7,6 +7,7 @@ import {
   type AgentConfig,
 } from '../services/agentConfig'
 import ConfigModal from './ConfigModal'
+import { applyTheme, readStoredTheme, type Theme } from '../theme'
 import './FoundryPlayground.css'
 
 const SUGGESTIONS = [
@@ -44,6 +45,7 @@ function agentNameFromEndpoint(endpoint: string): string {
 function FoundryPlayground() {
   const [config, setConfig] = useState<AgentConfig>(() => loadAgentConfig())
   const [configOpen, setConfigOpen] = useState(true)
+  const [theme, setTheme] = useState<Theme>(() => readStoredTheme())
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [events, setEvents] = useState<PlaygroundEvent[]>([])
@@ -58,6 +60,10 @@ function FoundryPlayground() {
   const abortRef = useRef<AbortController | null>(null)
 
   const missing = missingConfigFields(config)
+
+  useEffect(() => {
+    applyTheme(theme)
+  }, [theme])
 
   useEffect(() => {
     const element = chatBodyRef.current
@@ -139,6 +145,14 @@ function FoundryPlayground() {
           </p>
         </div>
         <div className="pg-chips">
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+            title={`Cambiar a modo ${theme === 'dark' ? 'claro' : 'oscuro'}`}
+          >
+            {theme === 'dark' ? 'Modo claro' : 'Modo oscuro'}
+          </button>
           <button type="button" className="btn" onClick={() => setConfigOpen(true)}>
             Configuración
           </button>
