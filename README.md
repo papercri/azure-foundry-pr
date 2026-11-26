@@ -6,12 +6,12 @@ del Agent Playground de Azure AI Foundry.
 
 ## Setup
 
-No hay archivo `.env`: el endpoint por defecto está en el código
-(`src/services/agentConfig.ts` → `DEFAULT_AGENT_CONFIG`) y el usuario introduce los valores en la
+No hay archivo `.env` y **ni endpoint ni API key se guardan en el repo**: el usuario los
+introduce en la
 **modal de configuración que se abre en cada carga de la página** (también se reabre con el
 botón *Configuración* de la cabecera). Lo último guardado se conserva en `sessionStorage`
-para precargar la modal. **La API key no está en el repo** (GitHub bloquea su subida): hay que
-pegarla en la modal.
+para precargar la modal. Por defecto solo hay `api-version=v1`
+(`src/services/agentConfig.ts` → `DEFAULT_AGENT_CONFIG`).
 
 | Campo de la modal | Descripción |
 | --- | --- |

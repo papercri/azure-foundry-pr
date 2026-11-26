@@ -6,6 +6,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0d0f15" />
+    <script>
+      try {
+        var t = localStorage.getItem('foundry.theme') === 'light' ? 'light' : 'dark'
+        document.documentElement.setAttribute('data-theme', t)
+        document.querySelector('meta[name="color-scheme"]').setAttribute('content', t)
+        document
+          .querySelector('meta[name="theme-color"]')
+          .setAttribute('content', t === 'light' ? '#f4f5fa' : '#0d0f15')
+      } catch (e) {
+        /* sin localStorage: se queda en dark */
+      }
+    </script>
     <title>Azure Foundry · Agent Playground</title>
   </head>
   <body>
