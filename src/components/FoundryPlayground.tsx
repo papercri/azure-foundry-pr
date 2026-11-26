@@ -8,6 +8,12 @@ import {
 } from '../services/agentConfig'
 import ConfigModal from './ConfigModal'
 import { applyTheme, readStoredTheme, type Theme } from '../theme'
+import {
+  readPayloadFormat,
+  savePayloadFormat,
+  toYaml,
+  type PayloadFormat,
+} from '../yaml'
 import './FoundryPlayground.css'
 
 const SUGGESTIONS = [
@@ -27,6 +33,11 @@ function prettyJson(raw: string): string {
   } catch {
     return raw
   }
+}
+
+function formatPayload(payload: unknown, format: PayloadFormat): string {
+  if (format === 'yaml') return toYaml(payload)
+  return prettyJson(JSON.stringify(payload, null, 2))
 }
 
 function formatTime(at: number): string {
@@ -49,6 +60,7 @@ function FoundryPlayground() {
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [events, setEvents] = useState<PlaygroundEvent[]>([])
+  const [payloadFormat, setPayloadFormat] = useState<PayloadFormat>(() => readPayloadFormat())
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [streamingText, setStreamingText] = useState<string | null>(null)
@@ -256,9 +268,24 @@ function FoundryPlayground() {
         <section className="panel" aria-label="Actividad del agente">
           <div className="panel-head">
             <h2>Actividad</h2>
-            <button type="button" className="btn" onClick={() => setEvents([])} disabled={busy}>
-              Limpiar
-            </button>
+            <div className="panel-actions">
+              <button
+                type="button"
+                className="btn"
+                aria-pressed={payloadFormat === 'yaml'}
+                title="Alternar el formato de los payloads entre JSON y YAML"
+                onClick={() => {
+                  const next: PayloadFormat = payloadFormat === 'json' ? 'yaml' : 'json'
+                  setPayloadFormat(next)
+                  savePayloadFormat(next)
+                }}
+              >
+                {payloadFormat}
+              </button>
+              <button type="button" className="btn" onClick={() => setEvents([])} disabled={busy}>
+                Limpiar
+              </button>
+            </div>
           </div>
           <div className="panel-body inspector-body">
             {events.length === 0 && (
@@ -308,7 +335,7 @@ function FoundryPlayground() {
                       </span>
                       <time>{formatTime(event.at)}</time>
                     </div>
-                    <pre>{prettyJson(JSON.stringify(event.payload, null, 2))}</pre>
+                    <pre>{formatPayload(event.payload, payloadFormat)}</pre>
                   </article>
                 )
               }
